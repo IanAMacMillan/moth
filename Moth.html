@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Moth Mode-Matching Tool</title>
+	<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+	<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+	<style>
+		/* ===== Moth Mode-Matching Tool ===== */
+		.mm-widget {
+			--accent: #225fba;
+			--accent-muted: rgba(34, 95, 186, 0.18);
+			--border: #e5e7eb;
+			--card: #ffffff;
+			--radius: 12px;
+			--pad: 14px;
+			--shadow: 0 12px 28px -16px rgba(15, 23, 42, 0.45);
+			--font: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+			font-family: var(--font);
+			color: #0f172a;
+			background: transparent;
+			max-width: 1100px;
+			margin: 1.5rem auto 3rem;
+			padding: 0 8px;
+			box-sizing: border-box;
+		}
+
+		.mm-widget * {
+			box-sizing: border-box;
+		}
+
+		.mm-widget h1 {
+			text-align: center;
+			color: var(--accent);
+			font-size: clamp(1.8rem, 2vw + 1rem, 2.3rem);
+			margin: 0.4em 0 1.2em;
+			letter-spacing: 0.02em;
+		}
+
+		.mm-widget fieldset {
+			background: var(--card);
+			border: 1px solid var(--border);
+			border-radius: var(--radius);
+			padding: calc(var(--pad) + 0.6em) var(--pad) var(--pad);
+			margin-bottom: 26px;
+			position: relative;
+			/* removed shadow for flatter look */
+		}
+
+		.mm-widget fieldset>legend {
+			position: absolute;
+			top: 0;
+			left: 16px;
+			transform: translateY(-50%);
+			background: var(--card);
+			padding: 0 8px;
+			border-radius: 999px;
+			font-weight: 650;
+			color: var(--accent);
+			border: 0 !important;
+			letter-spacing: 0.015em;
+			display: inline-block; /* ensure the label only wraps its text */
+			white-space: nowrap; /* avoid spanning width and hiding the top border */
+			width: auto;
+			z-index: 1;
+		}
+
+		.mm-widget p {
+			line-height: 1.6;
+			margin: 0.6rem 0;
+		}
+
+		.mm-widget label {
+			font-weight: 600;
+			display: block;
+			margin-bottom: 6px;
+		}
+
+		.mm-widget label>input,
+		.mm-widget label>select,
+		.mm-widget label>textarea {
+			margin-top: 6px;
+		}
+
+		.mm-widget input[type="number"],
+		.mm-widget input[type="text"],
+		.mm-widget select {
+			width: 100%;
+			border: 1px solid #cbd5e1;
+			border-radius: 10px;
+			padding: 9px 11px;
+			font-size: 15px;
+			font-family: var(--font);
+			background: #fff;
+		}
+
+		.mm-widget button {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			gap: 0.35rem;
+			background: var(--accent);
+			color: #fff;
+			border: none;
+			padding: 10px 16px;
+			border-radius: 999px;
+			cursor: pointer;
+			font-size: 15px;
+			font-weight: 600;
+			transition: background 0.18s ease, transform 0.18s ease;
+		}
+
+		.mm-widget button:hover {
+			background: color-mix(in srgb, var(--accent) 85%, white 15%);
+		}
+
+		.mm-widget button:active {
+			transform: translateY(1px);
+		}
+
+		.mm-widget .mm-button-ghost {
+			background: rgba(34, 95, 186, 0.08);
+			color: var(--accent);
+		}
+
+		.mm-widget .mm-button-ghost:hover {
+			background: rgba(34, 95, 186, 0.12);
+		}
+
+		.mm-widget .mm-row {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 18px;
+			align-items: flex-start;
+		}
+
+		.mm-widget .mm-row.mm-stack {
+			flex-direction: column;
+		}
+
+		.mm-widget .mm-row.mm-tight {
+			gap: 12px;
+		}
+
+		.mm-widget .mm-col {
+			flex: 1 1 220px;
+			min-width: 200px;
+		}
+
+		.mm-widget details {
+			border: 1px solid rgba(34, 95, 186, 0.2);
+			border-radius: 10px;
+			padding: 12px 14px;
+			margin-bottom: 14px;
+			background: rgba(34, 95, 186, 0.04);
+		}
+
+		.mm-widget details summary {
+			cursor: pointer;
+			list-style: none;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			font-weight: 650;
+			color: var(--accent);
+		}
+
+		.mm-widget details summary::marker,
+		.mm-widget details summary::-webkit-details-marker {
+			display: none;
+		}
+
+		.mm-widget details summary .chevron {
+			transition: transform 0.2s ease;
+		}
+
+		.mm-widget details[open] summary .chevron {
+			transform: rotate(90deg);
+		}
+
+		.mm-widget table {
+			width: 100%;
+			border-collapse: collapse;
+			margin-top: 12px;
+			font-size: 14px;
+		}
+
+		.mm-widget table th,
+		.mm-widget table td {
+			border: 1px solid var(--border);
+			padding: 8px 10px;
+			text-align: left;
+		}
+
+		.mm-widget table th {
+			background: rgba(15, 23, 42, 0.06);
+			color: #1e293b;
+			text-transform: uppercase;
+			letter-spacing: 0.04em;
+			font-size: 12px;
+		}
+
+		.mm-widget .mm-chip {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.3rem;
+			background: rgba(34, 95, 186, 0.08);
+			border: 1px dashed rgba(34, 95, 186, 0.3);
+			padding: 4px 10px;
+			border-radius: 999px;
+			font-size: 13px;
+			font-weight: 550;
+		}
+
+		.mm-widget .mm-note {
+			font-size: 1.1rem;
+			color: #475569;
+		}
+
+		.mm-widget .mm-field-note {
+			display: block;
+			margin-top: 6px;
+			font-size: 0.9rem;
+			color: #64748b;
+		}
+
+		.mm-widget .mm-canvas-container {
+			position: relative;
+			width: 100%;
+			margin: 0;
+			padding-top: 12px;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.mm-widget .mm-canvas-container canvas {
+			width: 100%;
+			height: min(352px, 44vw);
+			background: #f8fafc;
+			border: 1px solid var(--border);
+			border-radius: var(--radius);
+			display: block;
+			touch-action: none;
+			cursor: crosshair;
+		}
+
+		.mm-widget .mm-drag-indicator {
+			position: absolute;
+			top: 12px;
+			left: 12px;
+			padding: 6px 10px;
+			background: rgba(15, 23, 42, 0.85);
+			color: #f8fafc;
+			border-radius: 999px;
+			font-size: 13px;
+			font-weight: 550;
+			pointer-events: none;
+			opacity: 0;
+			transform: translateY(-6px);
+			transition: opacity 0.15s ease, transform 0.15s ease;
+			box-shadow: 0 8px 16px rgba(15, 23, 42, 0.2);
+		}
+
+		.mm-widget .mm-drag-indicator.mm-visible {
+			opacity: 1;
+			transform: translateY(0);
+		}
+
+		.mm-widget .mm-table-actions {
+			display: flex;
+			gap: 6px;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+
+		.mm-widget tr.mm-editing {
+			background: rgba(34, 95, 186, 0.08);
+		}
+
+		.mm-widget tr.mm-editing td {
+			border-bottom-color: rgba(34, 95, 186, 0.2);
+		}
+
+		.mm-widget .mm-tag-muted {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.25rem;
+			padding: 3px 8px;
+			background: rgba(15, 23, 42, 0.06);
+			border-radius: 999px;
+			font-size: 12px;
+			color: #334155;
+			margin-top: 4px;
+		}
+
+		.mm-widget .mm-library-fixed {
+			opacity: 0.88;
+		}
+
+		.mm-widget .mm-chart-container {
+			position: relative;
+			width: 100%;
+			max-width: 960px;
+			height: clamp(300px, 48vw, 460px);
+			background: #fff;
+			border: none; /* remove inner graph border, keep panel border */
+			border-radius: var(--radius);
+			overflow: hidden;
+			margin: 0 auto;
+		}
+
+		.mm-widget .mm-chart-container canvas {
+			width: 100% !important;
+			height: 100% !important;
+			display: block;
+		}
+
+		/* Custom tooltip for waist info */
+		.mm-info-icon {
+			display: inline-block;
+			cursor: help;
+			opacity: 0.7;
+			margin-left: 4px;
+			position: relative;
+			font-style: normal;
+			transition: opacity 0.2s;
+		}
+
+		.mm-info-icon:hover {
+			opacity: 1;
+		}
+
+		.mm-info-icon::after {
+			content: attr(data-tooltip);
+			position: absolute;
+			left: 50%;
+			bottom: calc(100% + 8px);
+			transform: translateX(-50%);
+			background: rgba(15, 23, 42, 0.95);
+			color: #fff;
+			padding: 12px 16px;
+			border-radius: 8px;
+			font-size: 14px;
+			line-height: 1.5;
+			white-space: normal;
+			width: 320px;
+			max-width: 90vw;
+			text-align: left;
+			pointer-events: none;
+			opacity: 0;
+			visibility: hidden;
+			transition: opacity 0.15s ease-in, visibility 0.15s ease-in;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+			z-index: 1000;
+		}
+
+		.mm-info-icon::before {
+			content: '';
+			position: absolute;
+			left: 50%;
+			bottom: calc(100% + 2px);
+			transform: translateX(-50%);
+			border: 6px solid transparent;
+			border-top-color: rgba(15, 23, 42, 0.95);
+			pointer-events: none;
+			opacity: 0;
+			visibility: hidden;
+			transition: opacity 0.15s ease-in, visibility 0.15s ease-in;
+			z-index: 1000;
+		}
+
+		.mm-info-icon:hover::after,
+		.mm-info-icon:hover::before {
+			opacity: 1;
+			visibility: visible;
+			transition-delay: 0.1s;
+		}
+
+		.mm-widget .mm-toolbar {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 10px;
+			justify-content: flex-end;
+			margin-top: 12px;
+		}
+
+		.mm-widget .mm-toolbar.mm-toolbar-split {
+			justify-content: space-between;
+		}
+
+		.mm-widget .mm-toolbar-group {
+			display: inline-flex;
+			flex-wrap: wrap;
+			gap: 8px;
+		}
+
+		.mm-widget .mm-toolbar-group.mm-align-end {
+			margin-left: auto;
+		}
+
+		.mm-widget .mm-toolbar button .toggle-label {
+			display: inline-flex;
+			align-items: center;
+		}
+
+		.mm-widget .mm-toolbar button .chevron {
+			display: inline-flex;
+			align-items: center;
+			margin-left: 6px;
+			transition: transform 0.2s ease;
+		}
+
+		.mm-widget .mm-toolbar button .chevron.mm-open {
+			transform: rotate(90deg);
+		}
+
+		.mm-widget .mm-toolbar .mm-toolbar-start {
+			margin-right: auto;
+		}
+
+		.mm-widget .mm-canvas-controls-panel {
+			border: 1px solid rgba(34, 95, 186, 0.2);
+			border-radius: 10px;
+			padding: 14px 16px;
+			background: rgba(34, 95, 186, 0.04);
+			margin-top: 10px;
+		}
+
+		.mm-widget .mm-canvas-controls-panel[hidden] {
+			display: none;
+		}
+
+		.mm-widget .mm-section-title {
+			font-size: 1.5rem;
+			font-weight: 650;
+			color: var(--accent);
+			margin: 0.6rem 0 0.3rem;
+		}
+
+		.mm-widget .mm-grid {
+			display: grid;
+			gap: 12px;
+		}
+
+		.mm-widget .mm-grid.two {
+			grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+		}
+
+		.mm-widget .mm-grid.three {
+			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+		}
+
+		.mm-widget .mm-grid.four {
+			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		}
+
+		.mm-widget .mm-beam-groups {
+			display: grid;
+			gap: 18px;
+		}
+
+		.mm-widget .mm-beam-section {
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+		}
+
+		.mm-widget .mm-pill-output {
+			font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+			background: rgba(34, 95, 186, 0.07);
+			border: 1px dashed rgba(34, 95, 186, 0.35);
+			padding: 6px 10px;
+			border-radius: 10px;
+			display: inline-flex;
+			align-items: center;
+			gap: 0.45rem;
+		}
+
+		.mm-widget .mm-pill-output sub {
+			vertical-align: sub;
+			font-size: smaller;
+		}
+
+		.mm-widget .mm-results-list {
+			display: grid;
+			gap: 10px;
+			margin-top: 12px;
+			max-height: clamp(260px, 45vh, 520px);
+			overflow-y: auto;
+			padding: 12px 10px 12px 12px;
+			border: 1px solid rgba(148, 163, 184, 0.35);
+			border-radius: 12px;
+			background: #fff;
+			scrollbar-gutter: stable;
+		}
+
+		.mm-widget .mm-result-card {
+			border: 1px solid rgba(148, 163, 184, 0.5);
+			border-radius: 12px;
+			padding: 12px 14px;
+			background: #f9fbff;
+			display: flex;
+			flex-direction: column;
+			gap: 8px;
+		}
+
+		.mm-widget .mm-result-card.mm-selected {
+			border-color: rgba(34, 95, 186, 0.65);
+			box-shadow: 0 0 0 2px rgba(34, 95, 186, 0.18);
+		}
+
+		.mm-widget .mm-result-card header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			font-weight: 650;
+			color: var(--accent);
+		}
+
+		.mm-widget .mm-result-metrics {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 12px;
+			font-size: 1.05rem;
+			line-height: 1.5;
+			color: #0f172a;
+		}
+
+		.mm-widget .mm-result-footer {
+			display: flex;
+			justify-content: flex-end;
+		}
+
+		.mm-widget .mm-empty-state {
+            margin-top: 10px;
+			padding: 16px;
+			text-align: center;
+			border: 1px dashed rgba(148, 163, 184, 0.5);
+			border-radius: 12px;
+			color: #475569;
+		}
+
+		.mm-widget .mm-divider {
+			border: 0;
+			border-top: 1px dashed rgba(148, 163, 184, 0.6);
+			margin: 14px 0;
+		}
+
+		.mm-widget input[type="file"] {
+			display: none;
+		}
+
+		@media (max-width: 720px) {
+			.mm-widget {
+				margin-top: 1rem;
+			}
+
+			.mm-widget fieldset {
+				padding-left: calc(var(--pad) + 4px);
+				padding-right: calc(var(--pad) + 4px);
+			}
+
+			.mm-widget .mm-canvas-container canvas {
+				height: 286px;
+			}
+
+			.mm-widget .mm-chart-container {
+				height: clamp(240px, 60vw, 360px);
+			}
+		}
+
+		@media (max-width: 520px) {
+			.mm-widget .mm-row {
+				flex-direction: column;
+				gap: 14px;
+			}
+
+			.mm-widget .mm-toolbar {
+				justify-content: center;
+			}
+
+			.mm-widget button {
+				width: 100%;
+			}
+		}
+	</style>
+</head>
+
+<body>
+	<div class="mm-widget" id="Moth-tool">
+		<fieldset>
+			<legend>Beam Setup</legend>
+			<div class="mm-beam-groups">
+				<div class="mm-beam-section">
+					<h2 class="mm-section-title">Initial Beam</h2>
+					<div class="mm-grid four">
+						<label>
+							Waist size w<sub>0</sub> (µm) <span class="mm-info-icon" data-tooltip="w₀ is the 1/e² intensity radius (half-width). At this distance from the beam axis, the intensity drops to 1/e² ≈ 13.5% of peak. Full beam diameter = 2w₀. All waist values in this program use the 1/e² definition.">ⓘ</span>
+							<input type="number" id="initialWaist" min="0.1" step="0.1" value="350">
+						</label>
+						<label>
+							Waist position z<sub>0</sub> (m) <span class="mm-info-icon" data-tooltip="The axial position along the beam path where the waist (minimum beam radius) is located. This is the point of highest intensity and smallest beam size.">ⓘ</span>
+							<input type="number" id="initialWaistZ" step="0.001" value="0">
+						</label>
+						<label>
+							Wavelength λ (nm) <span class="mm-info-icon" data-tooltip="The wavelength of the laser light. Common values: 1064 nm (Nd:YAG), 532 nm (green), 633 nm (HeNe). Shorter wavelengths have tighter diffraction limits.">ⓘ</span>
+							<input type="number" id="initialLambda" min="200" step="1" value="1064">
+						</label>
+						<label>
+							Reference plane (m) <span class="mm-info-icon" data-tooltip="The axial position where you want to define the initial beam parameters. All beam calculations use this as the starting point for propagation.">ⓘ</span>
+							<input type="number" id="referencePlane" step="0.001" value="0">
+						</label>
+					</div>
+				</div>
+				<div class="mm-beam-section">
+					<h2 class="mm-section-title">Target Beam</h2>
+					<div class="mm-grid four">
+						<label>
+							Waist w<sub>0,target</sub> (µm) <span class="mm-info-icon" data-tooltip="The target beam waist size (1/e² intensity radius) you want to achieve using the lens system. Use this to mode-match into cavities or focus to specific spot sizes.">ⓘ</span>
+							<input type="number" id="targetWaist" min="0.1" step="0.1" value="40">
+						</label>
+						<label>
+							Waist location z<sub>target</sub> (m) <span class="mm-info-icon" data-tooltip="The axial position where you want the target waist to be located. Typically this is at the entrance or center of a cavity, or at a focal point.">ⓘ</span>
+							<input type="number" id="targetWaistZ" step="0.001" value="0.8">
+						</label>
+						<label>
+							Allowable Δw<sub>0</sub> (µm) <span class="mm-info-icon" data-tooltip="Tolerance for the waist size. The achieved waist size must be within ±Δw₀ of the target value to be considered a valid solution.">ⓘ</span>
+							<input type="number" id="targetWaistTolerance" min="0" step="0.1" value="2">
+						</label>
+						<label>
+							Allowable Δz (mm) <span class="mm-info-icon" data-tooltip="Tolerance for the waist position. The achieved waist location must be within ±Δz of the target position to be considered a valid solution.">ⓘ</span>
+							<input type="number" id="targetPositionTolerance" min="0" step="0.1" value="5">
+						</label>
+					</div>
+				</div>
+			</div>
+		</fieldset>
+
+		<fieldset>
+			<legend>Beamline Layout</legend>
+			<div class="mm-grid">
+				<div class="mm-canvas-container">
+					<canvas id="beamCanvas" width="900" height="320" aria-label="Beamline visualization"></canvas>
+					<div id="dragIndicator" class="mm-drag-indicator">Drag to reposition</div>
+				</div>
+				<div class="mm-toolbar">
+					<button type="button" id="toggleLimitsPanel" class="mm-button-ghost mm-toolbar-start" aria-expanded="false" aria-controls="customLimitsPanel" title="Show or hide the custom plot limits"><span class="toggle-label">Plot Limits</span><span class="chevron" aria-hidden="true">›</span></button>
+					<button type="button" id="toggleAutoY" class="mm-button-ghost" title="Toggle automatic vertical scaling">Autoscale Y: On</button>
+					<button type="button" id="toggleLock" class="mm-button-ghost" title="Lock or unlock component dragging">Lock Layout</button>
+					<button type="button" id="addLensQuick" title="Drop a lens at the current cursor position">Add Lens</button>
+					<button type="button" id="addAnalyzerQuick" title="Drop an analyzer at the current cursor position">Add Analyzer</button>
+				</div>
+				<div id="customLimitsPanel" class="mm-canvas-controls-panel" hidden>
+					<div class="mm-grid three">
+						<label>
+							z min (m)
+							<input type="number" id="canvasLimitXMin" step="0.01" placeholder="auto">
+						</label>
+						<label>
+							z max (m)
+							<input type="number" id="canvasLimitXMax" step="0.01" placeholder="auto">
+						</label>
+						<label>
+							y limit (µm)
+							<input type="number" id="canvasLimitY" min="0" step="0.1" placeholder="auto">
+						</label>
+					</div>
+					<p class="mm-note">Leave a field blank to let Moth pick a value. The Y limit is symmetric, so a single
+						entry sets both the +/− envelope.</p>
+				</div>
+				<p class="mm-note">Drag lenses (blue) and analyzers (gold) along the axis to explore manual mode-matching.
+					A Gaussian trace of the current beam envelope is sketched in the canvas.</p>
+			</div>
+		</fieldset>
+
+		<fieldset>
+			<legend>Component Management</legend>
+			<div class="mm-row">
+				<div class="mm-col">
+					<h2 class="mm-section-title">Active Lenses</h2>
+					<div class="mm-grid three">
+						<label>
+							Lens label <span class="mm-info-icon" data-tooltip="Optional descriptive name for this lens. Helps identify specific optical elements in your setup.">ⓘ</span>
+							<input type="text" id="lensLabelInput" placeholder="Lens A">
+						</label>
+						<label>
+							Type <span class="mm-info-icon" data-tooltip="Choose 'Lens' for a thin lens or 'Curved Mirror' for a focusing/defocusing mirror. Mirrors have half the focal length of lenses with the same radius of curvature.">ⓘ</span>
+							<select id="lensTypeInput">
+								<option value="lens" selected>Lens</option>
+								<option value="mirror">Curved Mirror</option>
+							</select>
+						</label>
+						<label id="lensFocalLabel">
+							Focal length f (mm) <span class="mm-info-icon" data-tooltip="The focal length of the lens. Positive values converge (focus) the beam, negative values diverge (expand) it. Common values: 50-1000mm.">ⓘ</span>
+							<input type="number" id="lensFocalInput" step="0.1" value="100">
+						</label>
+						<label id="lensRocLabel" style="display:none;">
+							Radius of curvature (mm) <span class="mm-info-icon" data-tooltip="The radius of curvature of the mirror surface. For curved mirrors, the focal length is ROC/2. Positive ROC = concave (focusing), negative ROC = convex (diverging).">ⓘ</span>
+							<input type="number" id="lensRocInput" step="0.1" value="200">
+						</label>
+						<label>
+							Position z (m) <span class="mm-info-icon" data-tooltip="The axial position where this lens is placed along the beam path. Must be within your beam layout range.">ⓘ</span>
+							<input type="number" id="lensPositionInput" step="0.001" value="0.2">
+						</label>
+					</div>
+					<div class="mm-toolbar">
+						<button type="button" id="addLensBtn" title="Add a lens using the values above">Add Lens</button>
+						<button type="button" id="cancelLensEditBtn" class="mm-button-ghost" style="display:none;" title="Cancel editing the selected lens">Cancel Edit</button>
+						<button type="button" id="clearLensesBtn" class="mm-button-ghost" title="Remove all active lenses">Clear Lenses</button>
+					</div>
+					<div id="lensTable" class="mm-empty-state">No lenses yet. Add one to begin.</div>
+				</div>
+				<div class="mm-col">
+					<h2 class="mm-section-title">Beam Analyzers</h2>
+					<div class="mm-grid three">
+						<label>
+							Analyzer label <span class="mm-info-icon" data-tooltip="Optional name for this beam analyzer. Use to identify measurement points or detector locations in your setup.">ⓘ</span>
+							<input type="text" id="analyzerLabelInput" placeholder="Detector A">
+						</label>
+						<label>
+							Position z (m) <span class="mm-info-icon" data-tooltip="The axial position where you want to measure beam parameters. Analyzers display spot size, wavefront curvature, and Gouy phase at this location.">ⓘ</span>
+							<input type="number" id="analyzerPositionInput" step="0.001" value="0.5">
+						</label>
+						<label>
+							Lens exclusion ± (cm) <span class="mm-info-icon" data-tooltip="During automated solving, prevent lenses from being placed within this distance of the analyzer. Useful to reserve space around detectors or avoid physical collisions.">ⓘ</span>
+							<input type="number" id="analyzerExclusionInput" min="0" step="0.1" value="0">
+						</label>
+					</div>
+					<div class="mm-toolbar">
+						<button type="button" id="addAnalyzerBtn" title="Add an analyzer using the values above">Add Analyzer</button>
+						<button type="button" id="clearAnalyzersBtn" class="mm-button-ghost" title="Remove all analyzers">Clear Analyzers</button>
+					</div>
+					<!-- <p class="mm-field-note">Columns show: <strong>z</strong> position (m), <strong>w</strong> spot size (µm), <strong>R</strong> wavefront radius (m), <strong>Gouy phase</strong> (°), and any lens exclusion window.</p> -->
+					<div id="analyzerTable" class="mm-empty-state">Add analyzers to probe the beam along the optical path.</div>
+				</div>
+			</div>
+			<hr class="mm-divider">
+			<div class="mm-row">
+				<div class="mm-col">
+					<details id="libraryPanel">
+						<summary>Lens Library<span class="chevron">›</span></summary>
+						<p class="mm-note">Manage the focal lengths available to the solver. The list starts with a common
+							set, and you can edit it freely.</p>
+						<div class="mm-grid two">
+							<label>
+								Lens label (optional)
+								<input type="text" id="libraryLensLabel" placeholder="Library lens name">
+							</label>
+							<label>
+								Focal length (mm)
+								<input type="number" id="libraryLensFocal" step="0.1" value="100">
+							</label>
+						</div>
+						<div class="mm-toolbar">
+							<button type="button" id="addLibraryLensBtn" title="Append this lens to the catalog">Add to Library</button>
+						</div>
+						<input type="file" id="importLibraryCsvInput" accept=".csv,text/csv" hidden>
+						<div id="libraryTable" class="mm-empty-state">No catalog lenses yet.</div>
+						<div class="mm-toolbar" style="margin-top: 12px; flex-wrap: wrap;">
+							<button type="button" id="clearLibraryBtn" class="mm-button-ghost" title="Remove every lens from the catalog">Clear Library</button>
+							<button type="button" id="resetLibraryBtn" class="mm-button-ghost" title="Restore the default catalog lenses">Reset to Defaults</button>
+							<button type="button" id="exportLibraryCsvBtn" class="mm-button-ghost" title="Download the catalog as CSV">Export CSV</button>
+							<button type="button" id="importLibraryCsvBtn" class="mm-button-ghost" title="Load catalog lenses from a CSV file">Load CSV</button>
+						</div>
+					</details>
+				</div>
+			</div>
+		</fieldset>
+
+		<fieldset>
+			<legend>Solver &amp; Solutions</legend>
+			<div class="mm-row">
+				<div class="mm-col">
+					<h2 class="mm-section-title">Search Settings</h2>
+					<div class="mm-grid three">
+						<label>
+							Max lens count <span class="mm-info-icon" data-tooltip="Maximum number of lenses the solver will try to use. Higher counts find more solutions but take longer to compute. Typical range: 1-3 lenses.">ⓘ</span>
+							<input type="number" id="solverLensCount" min="1" max="4" value="2">
+						</label>
+						<label>
+							Search start z<sub>min</sub> (m) <span class="mm-info-icon" data-tooltip="Minimum axial position for lens placement. The solver will not place any lenses before this position.">ⓘ</span>
+							<input type="number" id="solverZMin" step="0.01" value="0">
+						</label>
+						<label>
+							Search end z<sub>max</sub> (m) <span class="mm-info-icon" data-tooltip="Maximum axial position for lens placement. The solver will not place any lenses beyond this position.">ⓘ</span>
+							<input type="number" id="solverZMax" step="0.01" value="1">
+						</label>
+						<label>
+							Grid steps per lens <span class="mm-info-icon" data-tooltip="Number of positions tested per lens along the search range. Higher values increase accuracy but significantly increase computation time. Typical: 10-20.">ⓘ</span>
+							<input type="number" id="solverGridSteps" min="3" max="100" value="15">
+						</label>
+						<label>
+							Min mode matching (%) <span class="mm-info-icon" data-tooltip="Minimum overlap integral between achieved and target beam. 100% is perfect match. Values >95% are typically excellent. Lower thresholds show more solution candidates.">ⓘ</span>
+							<input type="number" id="solverModeMatch" min="0" max="100" value="95">
+						</label>
+						<label>
+							Allow duplicates <span class="mm-info-icon" data-tooltip="Whether the solver can use the same focal length multiple times in a solution. 'Yes' allows repeated lenses (e.g., two 100mm lenses).">ⓘ</span>
+							<select id="solverAllowDuplicates">
+								<option value="true" selected>Yes</option>
+								<option value="false">No</option>
+							</select>
+						</label>
+						<label>
+							Min lens separation (cm) <span class="mm-info-icon" data-tooltip="Minimum distance between adjacent lenses in the solution. Prevents physically unrealistic layouts where lenses would overlap or be too close together.">ⓘ</span>
+							<input type="number" id="solverLensSpacing" min="0" step="0.1" value="2">
+						</label>
+						<label>
+							Clear Lenses Before Search <span class="mm-info-icon" data-tooltip="Whether to remove manually placed lenses before searching. 'Keep current lenses' lets the solver add to your existing layout instead of starting fresh.">ⓘ</span>
+							<select id="solverClearBeforeSearch">
+								<option value="true" selected>Clear lenses before solving</option>
+								<option value="false">Keep current lenses</option>
+							</select>
+
+						</label>
+					</div>
+					<div class="mm-toolbar">
+						<button type="button" id="runSolverBtn" title="Search for the best mode-matching layouts">Search for Solutions</button>
+						<div class="mm-pill-output" id="solverStatus">Idle</div>
+					</div>
+				</div>
+				<div class="mm-col">
+					<h2 class="mm-section-title">Solution Picks</h2>
+					<div class="mm-toolbar" style="justify-content: flex-end;">
+						<!-- <button type="button" id="toggleSolutionsList" class="mm-button-ghost" aria-controls="solutionsList" aria-expanded="true">Collapse Solutions</button> -->
+					</div>
+					<div id="solutionsList" class="mm-empty-state">Run the solver to populate candidate optical trains.</div>
+				</div>
+			</div>
+		</fieldset>
+
+		<fieldset>
+			<legend>Beam Profile</legend>
+			<div class="mm-grid">
+				<div class="mm-chart-container">
+					<canvas id="beamChart" aria-label="Spot size and Gouy phase chart"></canvas>
+				</div>
+				<div class="mm-toolbar" style="justify-content: flex-end;">
+					<button type="button" id="downloadPlotBtn" class="mm-button-ghost" title="Download scientific-grade plot as PDF">Download Plot</button>
+					<button type="button" id="exportPlotDataBtn" class="mm-button-ghost" title="Download beam data as CSV file">Download Plot Data</button>
+				</div>
+			</div>
+		</fieldset>
+
+		<fieldset>
+			<legend>Export &amp; Import</legend>
+			<div class="mm-row">
+				<div class="mm-col">
+					<p>Export the entire Moth configuration (beam parameters, components, library, solver settings) as a
+						JSON file for later reuse or sharing.</p>
+					<div class="mm-toolbar mm-toolbar-split">
+						<div class="mm-toolbar-group">
+							<button type="button" id="copySettingsLinkBtn" class="mm-button-ghost" title="Copy a shareable link for the current setup">Copy Share Link</button>
+						</div>
+						<div class="mm-toolbar-group mm-align-end">
+							<button type="button" id="exportConfigBtn" title="Download all settings as a JSON file">Export Settings</button>
+							<button type="button" id="importConfigBtn" class="mm-button-ghost" title="Load settings from a JSON file">Load Settings</button>
+							<input type="file" id="importConfigFile" accept="application/json">
+						</div>
+					</div>
+				</div>
+			</div>
+		</fieldset>
+	</div>
+
+	<script src="modematching_moth/moth.js"></script>
+</body>
+
+</html>
+
