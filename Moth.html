@@ -4,7 +4,6 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Moth Mode-Matching Tool</title>
-	<script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
 	<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
 	<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 	<style>
@@ -542,6 +541,13 @@
 			color: #475569;
 		}
 
+		.mm-widget .mm-version-tag {
+			margin-top: 20px;
+			text-align: right;
+			font-size: 0.92rem;
+			color: #64748b;
+		}
+
 		.mm-widget .mm-divider {
 			border: 0;
 			border-top: 1px dashed rgba(148, 163, 184, 0.6);
@@ -862,10 +868,11 @@
 				</div>
 			</div>
 		</fieldset>
+		<div class="mm-version-tag" id="versionTag">Moth v2.0.0</div>
 	</div>
 
+	<script src="modematching_moth/optics-core.js"></script>
 	<script src="modematching_moth/moth.js"></script>
 </body>
 
 </html>
-

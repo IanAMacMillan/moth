@@ -1,4 +1,8 @@
 (() => {
+    const optics = window.MothOptics;
+    if (!optics) {
+        throw new Error('MothOptics failed to load before moth.js');
+    }
     const $ = (id) => document.getElementById(id);
     const dom = {
         initialWaist: $('initialWaist'),
@@ -64,7 +68,8 @@
         customLimitsPanel: $('customLimitsPanel'),
         canvasLimitXMin: $('canvasLimitXMin'),
         canvasLimitXMax: $('canvasLimitXMax'),
-        canvasLimitY: $('canvasLimitY')
+        canvasLimitY: $('canvasLimitY'),
+        versionTag: $('versionTag')
     };
 
     const state = {
@@ -100,6 +105,7 @@
     canvas: { scale: null, pointerZ: null, lockedMaxRadius: null, lastMaxRadius: null, customLimits: { xMin: null, xMax: null, yLimit: null } },
     locked: false,
     autoScaleY: true,
+        lastTrace: null,
         editingLensId: null,
         solutions: [],
         selectedSolutionId: null,
@@ -112,6 +118,7 @@
     const dragState = { active: false, type: null, id: null, startPointer: 0, startPosition: 0, modified: false };
     const BUILTIN_FOCAL_LENGTHS = [25, 30, 38.1, 40, 50, 60, 75, 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 500, 750, 1000];
     const SHARE_BASE_URL = 'https://ian-macmillan.com/Mode-Matching/';
+    const APP_VERSION = '2.0.0';
 
     function micronsToMeters(value) { return (Number.isFinite(value) ? value : 0) * 1e-6; }
     function metersToMicrons(value) { return value * 1e6; }
@@ -237,7 +244,11 @@
     function exportPlotData() {
         const sortedLenses = getSortedLenses();
         const profile = computeBeamProfile(sortedLenses, 2000); // High resolution: 2000 points
-        const continuousGouy = computeContinuousGouyPhaseProfile(profile, sortedLenses);
+        if (!profile.validation.isValid) {
+            setSolverStatus(profile.validation.errors[0] || 'Plot data unavailable for invalid beam parameters', 'busy');
+            return;
+        }
+        const continuousGouy = computeContinuousGouyPhaseProfile(profile);
         
         // Build CSV with headers
         let csv = 'Position (m),Spot Size (µm),Accumulated Gouy Phase (°)\n';
@@ -253,7 +264,11 @@
     function downloadPlot() {
         const sortedLenses = getSortedLenses();
         const profile = computeBeamProfile(sortedLenses, 2000); // High resolution: 2000 points
-        const continuousGouy = computeContinuousGouyPhaseProfile(profile, sortedLenses);
+        if (!profile.validation.isValid) {
+            setSolverStatus(profile.validation.errors[0] || 'Plot unavailable for invalid beam parameters', 'busy');
+            return;
+        }
+        const continuousGouy = computeContinuousGouyPhaseProfile(profile);
         
         // SVG dimensions
         const width = 1200;
@@ -480,7 +495,7 @@
         yAxisLabel2.setAttribute('font-weight', 'bold');
         yAxisLabel2.setAttribute('fill', '#c85a5a');
         yAxisLabel2.setAttribute('transform', 'rotate(90)');
-        yAxisLabel2.textContent = 'Accumulated Gouy phase ζ (°)';
+        yAxisLabel2.textContent = 'Accumulated Gouy phase (°)';
         svg.appendChild(yAxisLabel2);
         
         // X-axis ticks
@@ -604,7 +619,7 @@
         if (cell === undefined || cell === null) return NaN;
         let text = `${cell}`.trim();
         if (!text) return NaN;
-        text = text.replace(/[−–]/g, '-');
+        text = text.replace(/[−-]/g, '-');
         if (/^\((.*)\)$/.test(text)) {
             text = `-${RegExp.$1}`;
         }
@@ -790,30 +805,31 @@
         dom.solverStatus.style.background = tone === 'busy' ? 'rgba(249, 115, 22, 0.12)' : tone === 'success' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(34, 95, 186, 0.12)';
         dom.solverStatus.style.color = tone === 'busy' ? '#9a3412' : tone === 'success' ? '#047857' : '#1d4ed8';
     }
-    function getInitialQ() { 
-        const { waist, waistZ, lambda, reference } = state.initial; 
-        const zR = Math.PI * waist * waist / lambda;
-        // q-parameter at the waist position: q = i*zR
-        // Propagate from waist to reference plane: q(reference) = (reference - waistZ) + i*zR
-        return math.complex(reference - waistZ, zR);
-    }
     function getSortedLenses() { return [...state.components.lenses].sort((a, b) => a.position - b.position); }
-    function propagateFreeSpace(q, distance) { if (!Number.isFinite(distance) || Math.abs(distance) < 1e-12) return q; return math.add(q, math.complex(distance, 0)); }
-    function applyLens(q, focalLength) { if (!Number.isFinite(focalLength) || Math.abs(focalLength) < 1e-12) return q; const denominator = math.subtract(1, math.divide(q, focalLength)); if (math.abs(denominator) < 1e-12) return math.complex(math.re(q), math.im(q)); return math.divide(q, denominator); }
-    function computeQAt(z, sortedLenses) {
-        let q = getInitialQ(); let currentZ = state.initial.reference;
-        for (const lens of sortedLenses) { const { position, focalLength } = lens; if (z < position - 1e-12) { q = propagateFreeSpace(q, z - currentZ); return q; } q = propagateFreeSpace(q, position - currentZ); q = applyLens(q, focalLength); currentZ = position; }
-        q = propagateFreeSpace(q, z - currentZ); return q;
+    function buildRawOpticalSystem(lensesOverride = null) {
+        return {
+            initial: { ...state.initial },
+            target: { ...state.target },
+            components: {
+                lenses: Array.isArray(lensesOverride)
+                    ? lensesOverride.map((lens) => ({ ...lens }))
+                    : state.components.lenses.map((lens) => ({ ...lens })),
+                analyzers: state.components.analyzers.map((analyzer) => ({ ...analyzer }))
+            }
+        };
     }
-    function computeBeamProfile(sortedLenses, samples = 360) {
-        const candidatePositions = [state.initial.reference, state.target.waistZ];
+    function computeProfileRange(sortedLenses) {
+        const candidatePositions = [state.initial.reference];
+        if (Number.isFinite(state.target.waistZ)) candidatePositions.push(state.target.waistZ);
         for (const lens of sortedLenses) candidatePositions.push(lens.position);
         for (const analyzer of state.components.analyzers) candidatePositions.push(analyzer.position);
+
         const customLimits = state.canvas.customLimits || { xMin: null, xMax: null };
         let spanMin = Math.min(...candidatePositions, state.initial.reference);
         let spanMax = Math.max(...candidatePositions, state.initial.reference + 0.5);
         if (Number.isFinite(customLimits.xMin)) spanMin = Math.min(spanMin, customLimits.xMin);
         if (Number.isFinite(customLimits.xMax)) spanMax = Math.max(spanMax, customLimits.xMax);
+
         const padding = Math.max(0.02, (spanMax - spanMin) * 0.08);
         let zMin = spanMin - padding;
         let zMax = spanMax + padding;
@@ -821,98 +837,67 @@
         if (Number.isFinite(customLimits.xMax)) zMax = Math.max(zMax, customLimits.xMax);
         if (!Number.isFinite(zMin)) zMin = spanMin - padding;
         if (!Number.isFinite(zMax) || zMax <= zMin) zMax = zMin + Math.max(0.1, padding * 2);
-        
+        return { min: zMin, max: zMax };
+    }
+    function resolveProfileSampleCount(samples) {
+        const customLimits = state.canvas.customLimits || { xMin: null, xMax: null };
         const hasCustomLimits = Number.isFinite(customLimits.xMin) || Number.isFinite(customLimits.xMax);
         const viewportWidth = Math.max(dom.beamCanvas?.clientWidth || 0, dom.beamChart?.clientWidth || 0, 900);
         const minimumSamples = hasCustomLimits ? Math.ceil(viewportWidth * 2.8) : Math.ceil(viewportWidth * 1.8);
-        const effectiveSamples = Math.max(samples, minimumSamples, hasCustomLimits ? 1800 : 1200);
-        
-        const lambda = state.initial.lambda;
-        const span = Math.max(zMax - zMin, 1e-9);
-        const zPositions = [];
-        for (let i = 0; i < effectiveSamples; i++) {
-            const t = effectiveSamples === 1 ? 0 : i / (effectiveSamples - 1);
-            zPositions.push(zMin + span * t);
+        return Math.max(samples, minimumSamples, hasCustomLimits ? 1800 : 1200);
+    }
+    function queryBeamState(profile, z) {
+        if (!profile || !Number.isFinite(z)) return null;
+        const sample = optics.queryTraceAtZ(profile, z);
+        if (!sample) return null;
+        const gouyAnchor = Number.isFinite(profile.gouyAnchor) ? profile.gouyAnchor : 0;
+        return { ...sample, gouy: sample.gouy - gouyAnchor };
+    }
+    function computeBeamProfile(sortedLenses, samples = 360, options = {}) {
+        const lenses = Array.isArray(sortedLenses) ? sortedLenses : getSortedLenses();
+        const sampleRange = computeProfileRange(lenses);
+        const normalized = optics.normalizeSystem(buildRawOpticalSystem(lenses));
+        const trace = optics.traceSystem(normalized, {
+            sampleRange,
+            sampleCount: resolveProfileSampleCount(samples),
+            anchorPositions: options.anchorPositions || []
+        });
+        trace.lambda = normalized.initial.lambda;
+        if (!trace.validation.isValid) {
+            trace.rangeMin = sampleRange.min;
+            trace.rangeMax = sampleRange.max;
+            trace.displayMin = sampleRange.min;
+            trace.displayMax = sampleRange.max;
+            trace.z = [sampleRange.min, sampleRange.max];
+            trace.w = [Number.NaN, Number.NaN];
+            trace.q = [];
+            trace.continuousGouy = [Number.NaN, Number.NaN];
+            trace.maxW = state.initial.waist || 1e-6;
+            trace.gouyAnchor = 0;
+        } else {
+            trace.gouyAnchor = Number.isFinite(trace.samples?.[0]?.gouy) ? trace.samples[0].gouy : 0;
+            trace.continuousGouy = trace.samples.map((sample) => sample.gouy - trace.gouyAnchor);
         }
-
-        const anchorStep = span / Math.max(effectiveSamples - 1, 1);
-        const lensAnchorOffset = Math.max(anchorStep * 0.4, span * 1e-6, 1e-6);
-        const pushAnchor = (value) => {
-            if (Number.isFinite(value) && value >= zMin && value <= zMax) zPositions.push(value);
-        };
-
-        pushAnchor(state.initial.reference);
-        pushAnchor(state.target.waistZ);
-        for (const analyzer of state.components.analyzers) pushAnchor(analyzer.position);
-        for (const lens of sortedLenses) {
-            pushAnchor(lens.position - lensAnchorOffset);
-            pushAnchor(lens.position);
-            pushAnchor(lens.position + lensAnchorOffset);
-        }
-
-        zPositions.sort((a, b) => a - b);
-        const minSpacing = Math.max(span * 1e-10, 1e-12);
-        const uniqueZ = [];
-        for (let i = 0; i < zPositions.length; i++) {
-            if (i === 0 || zPositions[i] - uniqueZ[uniqueZ.length - 1] > minSpacing) {
-                uniqueZ.push(zPositions[i]);
-            }
-        }
-        
-        // Now compute beam parameters at all unique positions
-        const zValues = [];
-        const wValues = [];
-        const qValues = [];
-        let maxW = 0;
-        
-        for (const z of uniqueZ) {
-            const q = computeQAt(z, sortedLenses);
-            const { w } = extractBeamMetrics(q, lambda);
-            zValues.push(z);
-            wValues.push(w);
-            qValues.push(q);
-            if (Number.isFinite(w)) maxW = Math.max(maxW, w);
-        }
-        
-        return { z: zValues, w: wValues, q: qValues, rangeMin: zMin, rangeMax: zMax, maxW: maxW || state.initial.waist, lambda, displayMin: zMin, displayMax: zMax };
+        return trace;
     }
     function extractBeamMetrics(q, lambda) {
-        const inv = math.divide(1, q); const invRe = math.re(inv); const invIm = math.im(inv);
-        let R = Number.POSITIVE_INFINITY; if (Math.abs(invRe) > 1e-12) R = 1 / invRe;
-        let w = Number.POSITIVE_INFINITY; if (Math.abs(invIm) > 1e-12) { const candidate = Math.sqrt(Math.max(0, lambda / (Math.PI * Math.abs(invIm)))); if (Number.isFinite(candidate)) { w = candidate; } }
-        const gouy = Math.atan2(math.re(q), math.im(q)); return { R, w, gouy };
+        return optics.extractBeamMetrics(q, lambda);
     }
-    function computeAbsoluteGouyAtZ(targetZ, sortedLenses = null) {
-        if (!Number.isFinite(targetZ)) return null;
-        const lenses = Array.isArray(sortedLenses) ? sortedLenses : getSortedLenses();
-        const localGouy = (q) => Math.atan2(math.re(q), math.im(q));
-        let segmentStartZ = state.initial.reference;
-        let segmentStartQ = getInitialQ();
-        let segmentStartPhase = 0;
-
-        for (const lens of lenses) {
-            if (!Number.isFinite(lens?.position) || lens.position >= targetZ - 1e-12) break;
-            const qBeforeLens = propagateFreeSpace(segmentStartQ, lens.position - segmentStartZ);
-            segmentStartPhase += localGouy(qBeforeLens) - localGouy(segmentStartQ);
-            segmentStartQ = applyLens(qBeforeLens, lens.focalLength);
-            segmentStartZ = lens.position;
-        }
-
-        const qAtZ = propagateFreeSpace(segmentStartQ, targetZ - segmentStartZ);
-        return segmentStartPhase + (localGouy(qAtZ) - localGouy(segmentStartQ));
+    function computeAbsoluteGouyAtZ(targetZ, profile = state.lastTrace) {
+        const sample = queryBeamState(profile, targetZ);
+        return Number.isFinite(sample?.gouy) ? sample.gouy : null;
     }
-    function computeContinuousGouyAtZ(targetZ, sortedLenses = null, anchorZ = null) {
-        const absolute = computeAbsoluteGouyAtZ(targetZ, sortedLenses);
+    function computeContinuousGouyAtZ(targetZ, profile = state.lastTrace, anchorZ = null) {
+        const absolute = computeAbsoluteGouyAtZ(targetZ, profile);
         if (!Number.isFinite(absolute)) return null;
         if (!Number.isFinite(anchorZ)) return absolute;
-        const anchor = computeAbsoluteGouyAtZ(anchorZ, sortedLenses);
+        const anchor = computeAbsoluteGouyAtZ(anchorZ, profile);
         if (!Number.isFinite(anchor)) return absolute;
         return absolute - anchor;
     }
-    function computeContinuousGouyPhaseProfile(profile, sortedLenses = null) {
-        if (!profile || !Array.isArray(profile.z) || !profile.z.length) return [];
-        const anchorZ = profile.z[0];
-        return profile.z.map((z) => computeContinuousGouyAtZ(z, sortedLenses, anchorZ));
+    function computeContinuousGouyPhaseProfile(profile) {
+        if (!profile || !Array.isArray(profile.continuousGouy)) return [];
+        return profile.continuousGouy;
     }
     function interpolateProfileValue(profile, values, targetZ) {
         if (!profile || !Array.isArray(profile.z) || !Array.isArray(values) || profile.z.length !== values.length || !profile.z.length || !Number.isFinite(targetZ)) return null;
@@ -938,30 +923,8 @@
         return v0 + (v1 - v0) * t;
     }
     function findOutputWaist(sortedLenses, profile) {
-        // Find the waist AFTER the last lens (output waist)
-        // Uses analytical extraction from q-parameter (no searching needed!)
-        
-        // Determine the position after the last lens, or from reference plane if no lenses
-        let currentZ = state.initial.reference;
-        if (sortedLenses.length > 0) {
-            const lastLens = sortedLenses[sortedLenses.length - 1];
-            currentZ = lastLens.position;
-        }
-        
-        const lambda = state.initial.lambda;
-        
-        // Get q-parameter immediately after the last lens
-        const q = computeQAt(currentZ, sortedLenses);
-        
-        // Analytical extraction of waist position and size from q-parameter
-        // For q = (z - z₀) + i*zR:
-        //   - Waist position: z₀ = z - Re(q)
-        //   - Waist size: w₀ = √(λ*Im(q)/π)
-        const waistZ0 = currentZ - math.re(q);
-        const zR = math.im(q);
-        const w0 = Math.sqrt(lambda * zR / Math.PI);
-        
-        return { w0, waistZ0 };
+        if (!profile?.outputWaist) return { w0: Number.NaN, waistZ0: Number.NaN };
+        return { w0: profile.outputWaist.w, waistZ0: profile.outputWaist.z };
     }
     function renderLensTable() {
         const lenses = state.components.lenses; if (!lenses.length) { dom.lensTable.className = 'mm-empty-state'; dom.lensTable.innerHTML = 'No lenses yet. Add one to begin.'; return; }
@@ -986,12 +949,11 @@
     function renderAnalyzerTable(sortedLenses, profile = null) {
         const analyzers = state.components.analyzers;
         if (!analyzers.length) { dom.analyzerTable.className = 'mm-empty-state'; dom.analyzerTable.innerHTML = 'Add analyzers to probe the beam along the optical path.'; return; }
-        const lambda = state.initial.lambda;
         const workingProfile = profile || computeBeamProfile(sortedLenses, Math.max(720, analyzers.length * 32));
-        const continuousGouy = computeContinuousGouyPhaseProfile(workingProfile, sortedLenses);
         const rows = analyzers.sort((a, b) => a.position - b.position).map((an) => {
-            const q = computeQAt(an.position, sortedLenses); const metrics = extractBeamMetrics(q, lambda);
-            const continuousGouyAtAnalyzer = interpolateProfileValue(workingProfile, continuousGouy, an.position);
+            const sample = queryBeamState(workingProfile, an.position);
+            const metrics = sample?.metrics || { w: Number.NaN, R: Number.NaN };
+            const continuousGouyAtAnalyzer = sample?.gouy;
             const exclusion = Math.max(0, an.lensExclusionRadius || 0);
             const exclusionTag = exclusion > 0 ? `±${formatNumber(metersToCentimeters(exclusion), { precision: 2, unit: 'cm' })}` : '-';
             const gouyDegrees = Number.isFinite(continuousGouyAtAnalyzer) ? continuousGouyAtAnalyzer * 180 / Math.PI : null;
@@ -1032,7 +994,7 @@
             data: {
                 datasets: [
                     {
-                        label: 'Accumulated Gouy phase ζ(z)',
+                        label: 'Accumulated Gouy phase',
                         data: [],
                         borderColor: '#e57373',
                         pointRadius: 0,
@@ -1116,7 +1078,7 @@
                     },
                     y2: {
                         position: 'right',
-                        title: { display: true, text: 'Accumulated Gouy phase ζ (°)', color: '#c85a5a', font: { weight: '600' } },
+                        title: { display: true, text: 'Accumulated Gouy phase (°)', color: '#c85a5a', font: { weight: '600' } },
                         grid: { display: false },
                         ticks: { 
                             color: '#c85a5a',
@@ -1130,7 +1092,6 @@
     }
     function updateChart(profile) {
         if (!state.chart) return;
-        const sortedLenses = getSortedLenses();
         const beamData = profile.z.map((z, i) => ({
             x: Number(z),
             y: Number.isFinite(profile.w[i]) ? metersToMicrons(profile.w[i]) : null
@@ -1158,14 +1119,9 @@
         // Adjust min/max to align with step boundaries to ensure clean ticks
         const adjustedMin = Math.floor(xMin / stepSize) * stepSize;
         const adjustedMax = Math.ceil(xMax / stepSize) * stepSize;
-        const gouyAnchorZ = adjustedMin;
-        const continuousGouy = computeContinuousGouyPhaseProfile(profile, sortedLenses).map((value) => {
-            const anchor = computeAbsoluteGouyAtZ(gouyAnchorZ, sortedLenses);
-            return Number.isFinite(value) && Number.isFinite(anchor) ? value + (computeAbsoluteGouyAtZ(profile.z[0], sortedLenses) - anchor) : value;
-        });
         const gouyData = profile.z.map((z, i) => ({
             x: Number(z),
-            y: Number.isFinite(continuousGouy[i]) ? continuousGouy[i] * 180 / Math.PI : null
+            y: Number.isFinite(profile.continuousGouy[i]) ? profile.continuousGouy[i] * 180 / Math.PI : null
         }));
         state.chart.data.datasets[0].data = gouyData;
         state.chart.data.datasets[1].data = targetLine;
@@ -1183,9 +1139,9 @@
             return points;
         };
         const sampleBeamPoint = (z) => {
-            const q = computeQAt(z, sortedLenses);
-            const { w } = extractBeamMetrics(q, state.initial.lambda);
-            const gouy = computeContinuousGouyAtZ(z, sortedLenses, gouyAnchorZ);
+            const sample = queryBeamState(profile, z);
+            const w = sample?.metrics?.w;
+            const gouy = sample?.gouy;
             return {
                 beam: { x: z, y: Number.isFinite(w) ? metersToMicrons(w) : null },
                 target: { x: z, y: metersToMicrons(state.target.waist) },
@@ -1227,37 +1183,36 @@
         const convexCurve = halfWidth * 1.25; const concaveInset = halfWidth * 1.05; const isConvex = lens.focalLength >= 0;
         
         if (isMirror) {
-            // Draw curved mirror
-            const mirrorThickness = 3;
+            const mirrorThickness = 8;
+            const reflectiveX = x + mirrorThickness * 0.45;
+            const backX = x - mirrorThickness * 0.45;
+            const faceControlX = isConvex ? reflectiveX + halfWidth * 1.15 : reflectiveX - halfWidth * 1.05;
+
             ctx.beginPath();
-            if (isConvex) {
-                // Convex mirror (curves outward)
-                ctx.moveTo(x - mirrorThickness/2, topY);
-                ctx.quadraticCurveTo(x - mirrorThickness/2 - convexCurve * 0.6, midY, x - mirrorThickness/2, bottomY);
-                ctx.lineTo(x + mirrorThickness/2, bottomY);
-                ctx.quadraticCurveTo(x + mirrorThickness/2 - convexCurve * 0.6, midY, x + mirrorThickness/2, topY);
-            } else {
-                // Concave mirror (curves inward)
-                ctx.moveTo(x - mirrorThickness/2, topY);
-                ctx.quadraticCurveTo(x - mirrorThickness/2 + concaveInset * 0.6, midY, x - mirrorThickness/2, bottomY);
-                ctx.lineTo(x + mirrorThickness/2, bottomY);
-                ctx.quadraticCurveTo(x + mirrorThickness/2 + concaveInset * 0.6, midY, x + mirrorThickness/2, topY);
-            }
+            ctx.moveTo(backX, topY);
+            ctx.lineTo(backX, bottomY);
+            ctx.lineTo(reflectiveX, bottomY);
+            ctx.quadraticCurveTo(faceControlX, midY, reflectiveX, topY);
             ctx.closePath();
-            const mirrorColor = locked ? 'rgba(148, 163, 184, 0.85)' : 'rgba(100, 116, 139, 0.9)';
-            ctx.fillStyle = mirrorColor;
-            ctx.strokeStyle = locked ? 'rgba(71, 85, 105, 0.9)' : 'rgba(51, 65, 85, 0.95)';
-            ctx.lineWidth = 1.5;
+            ctx.fillStyle = locked ? 'rgba(59, 130, 246, 0.68)' : 'rgba(37, 99, 235, 0.74)';
+            ctx.strokeStyle = locked ? 'rgba(37, 99, 235, 0.82)' : 'rgba(29, 78, 216, 0.9)';
+            ctx.lineWidth = 1.1;
             ctx.fill();
             ctx.stroke();
-            // Add reflective shine
+
             ctx.save();
-            ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-            ctx.lineWidth = 1;
-            const shineOffset = isConvex ? -2 : 2;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.82)';
+            ctx.lineWidth = 1.8;
             ctx.beginPath();
-            ctx.moveTo(x + shineOffset, topY + height * 0.25);
-            ctx.lineTo(x + shineOffset, bottomY - height * 0.25);
+            ctx.moveTo(reflectiveX, topY + 2);
+            ctx.quadraticCurveTo(faceControlX, midY, reflectiveX, bottomY - 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(backX + 1.4, topY + Math.max(4, 0.18 * height));
+            ctx.lineTo(backX + 1.4, bottomY - Math.max(4, 0.18 * height));
             ctx.stroke();
             ctx.restore();
         } else {
@@ -1776,22 +1731,33 @@
         state.canvas.scale = { rangeMin: effectiveRangeMin, rangeMax: effectiveRangeMax, pxPerMeter, paddingLeft, paddingRight, width, height };
     }
     function computeModeMatching(w1, R1, w2, R2, lambda) {
-        if (!Number.isFinite(w1) || !Number.isFinite(w2) || w1 <= 0 || w2 <= 0) return 0; const invW1Sq = 1 / (w1 * w1); const invW2Sq = 1 / (w2 * w2); const sumInv = invW1Sq + invW2Sq; if (sumInv <= 0) return 0;
-        const invR1 = Number.isFinite(R1) && Math.abs(R1) > 1e-12 ? 1 / R1 : 0; const invR2 = Number.isFinite(R2) && Math.abs(R2) > 1e-12 ? 1 / R2 : 0; const deltaCurvature = invR2 - invR1; const k = 2 * Math.PI / lambda; const denom = math.complex(sumInv, 0.5 * k * deltaCurvature); const amplitude = math.divide(2, math.multiply(w1 * w2, denom)); const efficiency = Math.pow(math.abs(amplitude), 2); return clamp(efficiency, 0, 1);
+        return optics.computeModeOverlap(w1, R1, w2, R2, lambda);
     }
     function evaluateArrangement(lensSet) {
         if (!Array.isArray(lensSet) || lensSet.length === 0) return null;
-        const sorted = [...lensSet].sort((a, b) => a.position - b.position); let q = getInitialQ(); let currentZ = state.initial.reference;
-        for (const lens of sorted) { q = propagateFreeSpace(q, lens.position - currentZ); q = applyLens(q, lens.focalLength); currentZ = lens.position; }
-        const lambda = state.initial.lambda; const zR = Math.abs(math.im(q)); const w0 = Math.sqrt(Math.max(0, zR * lambda / Math.PI)); if (!Number.isFinite(w0) || w0 <= 0) return null;
-        const waistZ0 = currentZ - math.re(q); const qAtTarget = propagateFreeSpace(q, state.target.waistZ - currentZ); const targetMetrics = extractBeamMetrics(qAtTarget, lambda); if (!Number.isFinite(targetMetrics.w) || targetMetrics.w <= 0) return null;
-        const idealZR = Math.PI * state.target.waist * state.target.waist / lambda; const idealMetrics = extractBeamMetrics(math.complex(0, idealZR), lambda);
-        const modeMatching = computeModeMatching(targetMetrics.w, targetMetrics.R, idealMetrics.w, idealMetrics.R, lambda);
-        const errorW = Math.abs(targetMetrics.w - state.target.waist); const errorZ = Math.abs(waistZ0 - state.target.waistZ);
-        const toleranceW = state.target.waistTolerance > 0 ? state.target.waistTolerance : state.target.waist || 1e-6; const toleranceZ = state.target.positionTolerance > 0 ? state.target.positionTolerance : 1e-3;
-        const score = (errorW / toleranceW) + (errorZ / toleranceZ);
-        return { id: null, lenses: sorted.map((lens) => ({ label: lens.label, focalLength: lens.focalLength, position: lens.position, sourceId: lens.sourceId || null })),
-            metrics: { w0, waistZ0, wAtTarget: targetMetrics.w, errorW, errorZ, RAtTarget: targetMetrics.R }, modeMatching, score };
+        const sorted = [...lensSet].sort((a, b) => a.position - b.position);
+        const normalized = optics.normalizeSystem({
+            initial: { ...state.initial },
+            target: { ...state.target },
+            components: {
+                lenses: sorted.map((lens) => ({ ...lens })),
+                analyzers: []
+            }
+        });
+        const trace = optics.traceSystem(normalized, {
+            sampleRange: computeProfileRange(sorted),
+            sampleCount: 160,
+            anchorPositions: [state.target.waistZ]
+        });
+        const scored = optics.scoreSolution(trace, normalized.target);
+        if (!scored) return null;
+        return {
+            id: null,
+            lenses: sorted.map((lens) => ({ label: lens.label, focalLength: lens.focalLength, position: lens.position, sourceId: lens.sourceId || null, type: lens.type || 'lens' })),
+            metrics: { ...scored.metrics },
+            modeMatching: scored.modeMatching,
+            score: scored.score
+        };
     }
     function renderSolutionsList(solutions) {
         if (!Array.isArray(solutions) || !solutions.length) { dom.solutionsList.className = 'mm-empty-state'; dom.solutionsList.innerHTML = 'Run the solver to populate candidate optical trains.'; updateSolutionsVisibility(); return; }
@@ -2014,7 +1980,7 @@
             componentsSnapshot.lenses = payloadSolution.lenses.map((lens) => ({ ...lens }));
         }
         const payload = {
-            version: '1.3.0',
+            version: APP_VERSION,
             timestamp: new Date().toISOString(),
             initial: { ...state.initial },
             target: { ...state.target },
@@ -2056,7 +2022,7 @@
     function showDragIndicator(content) { if (!dom.dragIndicator) return; dom.dragIndicator.textContent = content; dom.dragIndicator.classList.add('mm-visible'); }
     function hideDragIndicator() { if (!dom.dragIndicator) return; dom.dragIndicator.classList.remove('mm-visible'); }
     function refreshAll() {
-        const sortedLenses = getSortedLenses(); renderLensTable(); const profile = computeBeamProfile(sortedLenses); updateChart(profile); drawCanvas(profile, sortedLenses); renderAnalyzerTable(sortedLenses, profile); renderSolutionsList(state.solutions);
+        const sortedLenses = getSortedLenses(); renderLensTable(); const profile = computeBeamProfile(sortedLenses); state.lastTrace = profile; updateChart(profile); drawCanvas(profile, sortedLenses); renderAnalyzerTable(sortedLenses, profile); renderSolutionsList(state.solutions);
         if (!state.locked) { const probeZ = Number.isFinite(state.canvas.pointerZ) ? state.canvas.pointerZ : state.initial.reference; updateCanvasCursor(probeZ); } else { dom.beamCanvas.style.cursor = 'not-allowed'; }
     }
     function addLens({ focalMm, position, label, type = 'lens', roc = null }) {
@@ -2075,7 +2041,14 @@
         if (!Number.isFinite(position)) return; const analyzer = { id: nextId('A'), label: label || '', position, lensExclusionRadius: Math.max(0, exclusionRadius) };
         state.components.analyzers.push(analyzer); invalidateSolutions('Layout changed - rerun solver'); refreshAll();
     }
-    function resetLensForm(preserveValues = false) { state.editingLensId = null; dom.addLensBtn.textContent = 'Add Lens'; dom.cancelLensEditBtn.style.display = 'none'; if (!preserveValues) { dom.lensLabelInput.value = ''; } }
+    function syncLensSubmitButton() {
+        const lensType = dom.lensTypeInput?.value === 'mirror' ? 'mirror' : 'lens';
+        const action = state.editingLensId ? 'Save' : 'Add';
+        const noun = lensType === 'mirror' ? 'Mirror' : 'Lens';
+        dom.addLensBtn.textContent = `${action} ${noun}`;
+        dom.addLensBtn.title = `${action} ${noun.toLowerCase()} using the values above`;
+    }
+    function resetLensForm(preserveValues = false) { state.editingLensId = null; syncLensSubmitButton(); dom.cancelLensEditBtn.style.display = 'none'; if (!preserveValues) { dom.lensLabelInput.value = ''; } }
     function startLensEdit(lens) {
         if (!lens) return; state.editingLensId = lens.id; dom.lensLabelInput.value = lens.label || '';
         const lensType = lens.type || 'lens';
@@ -2089,7 +2062,7 @@
             dom.lensFocalInput.value = Number.isFinite(focalMm) ? parseFloat(focalMm.toFixed(4)).toString() : '';
         }
         dom.lensPositionInput.value = Number.isFinite(lens.position) ? parseFloat(lens.position.toFixed(4)).toString() : '';
-        dom.addLensBtn.textContent = 'Save Lens'; dom.cancelLensEditBtn.style.display = ''; renderLensTable(); dom.lensLabelInput.focus();
+        syncLensSubmitButton(); dom.cancelLensEditBtn.style.display = ''; renderLensTable(); dom.lensLabelInput.focus();
     }
     function handleLensSubmit() {
         const label = dom.lensLabelInput.value;
@@ -2177,6 +2150,7 @@
             dom.lensFocalLabel.style.display = '';
             dom.lensRocLabel.style.display = 'none';
         }
+        syncLensSubmitButton();
     }
     if (dom.lensTypeInput) {
         dom.lensTypeInput.addEventListener('change', () => {
@@ -2252,7 +2226,7 @@
     if (dom.exportLibraryCsvBtn) {
         dom.exportLibraryCsvBtn.addEventListener('click', () => {
             if (!state.library.length) {
-                setSolverStatus('Library is empty – nothing to export', 'busy');
+                setSolverStatus('Library is empty - nothing to export', 'busy');
                 return;
             }
             const csv = buildLibraryCsv(cloneLibraryEntries(state.library));
@@ -2278,7 +2252,7 @@
                     state.library = [...state.library, ...imported];
                     state.librarySequence = computeLibrarySequence(state.library);
                     renderLibraryTable();
-                    invalidateSolutions('Library changed – rerun solver');
+                    invalidateSolutions('Library changed - rerun solver');
                     setSolverStatus(`${imported.length} library lens${imported.length === 1 ? '' : 'es'} appended`, 'success');
                 } catch (error) {
                     console.error('Failed to import library CSV', error);
@@ -2290,7 +2264,7 @@
             reader.readAsText(file);
         });
     }
-    dom.libraryTable.addEventListener('click', (event) => { const target = event.target; if (!(target instanceof HTMLElement)) return; if (target.dataset.action === 'remove-library-lens') { const row = target.closest('tr'); if (!row) return; state.library = state.library.filter((lens) => lens.id !== row.dataset.id); renderLibraryTable(); invalidateSolutions('Library changed – rerun solver'); } });
+    dom.libraryTable.addEventListener('click', (event) => { const target = event.target; if (!(target instanceof HTMLElement)) return; if (target.dataset.action === 'remove-library-lens') { const row = target.closest('tr'); if (!row) return; state.library = state.library.filter((lens) => lens.id !== row.dataset.id); renderLibraryTable(); invalidateSolutions('Library changed - rerun solver'); } });
     dom.solutionsList.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
@@ -2330,17 +2304,9 @@
     dom.addLensQuick.addEventListener('click', () => { 
         if (state.editingLensId) { resetLensForm(true); renderLensTable(); } 
         const position = Number.isFinite(state.canvas.pointerZ) ? state.canvas.pointerZ : state.initial.reference + 0.3; 
-        const lensType = dom.lensTypeInput.value;
         const label = dom.lensLabelInput.value;
-        let focal, roc;
-        if (lensType === 'mirror') {
-            roc = readNumericInput(dom.lensRocInput, 200);
-            focal = roc / 2;
-        } else {
-            focal = readNumericInput(dom.lensFocalInput, 100);
-            roc = null;
-        }
-        addLens({ focalMm: focal, position, label, type: lensType, roc: roc }); 
+        const focal = readNumericInput(dom.lensFocalInput, 100);
+        addLens({ focalMm: focal, position, label, type: 'lens', roc: null }); 
         dom.lensLabelInput.value = ''; 
     });
     dom.addAnalyzerQuick.addEventListener('click', () => {
@@ -2351,7 +2317,7 @@
     });
     dom.beamCanvas.addEventListener('pointerdown', (event) => { if (state.locked) return; const z = pointerToZ(event.clientX); state.canvas.pointerZ = z; const hit = findComponentNear(z); if (hit) { event.preventDefault(); dom.beamCanvas.setPointerCapture(event.pointerId); dragState.active = true; dragState.type = hit.type; dragState.id = hit.id; dragState.startPointer = z; dragState.startPosition = hit.position; dragState.modified = false; dom.beamCanvas.style.cursor = 'grabbing'; const label = hit.type === 'lens' ? (state.components.lenses.find((l) => l.id === hit.id)?.label || hit.id) : (state.components.analyzers.find((a) => a.id === hit.id)?.label || hit.id); showDragIndicator(`${label} @ ${formatNumber(hit.position, { precision: 3, unit: 'm' })}`); } else { updateCanvasCursor(z); } });
     dom.beamCanvas.addEventListener('pointermove', (event) => { const z = pointerToZ(event.clientX); state.canvas.pointerZ = z; if (!dragState.active) { updateCanvasCursor(z); return; } event.preventDefault(); const delta = z - dragState.startPointer; const newPosition = dragState.startPosition + delta; if (dragState.type === 'lens') { const lens = state.components.lenses.find((l) => l.id === dragState.id); if (lens) { lens.position = newPosition; dragState.modified = true; showDragIndicator(`${lens.label || lens.id} → ${formatNumber(newPosition, { precision: 3, unit: 'm' })}`); refreshAll(); } } else if (dragState.type === 'analyzer') { const analyzer = state.components.analyzers.find((a) => a.id === dragState.id); if (analyzer) { analyzer.position = newPosition; dragState.modified = true; showDragIndicator(`${analyzer.label || analyzer.id} → ${formatNumber(newPosition, { precision: 3, unit: 'm' })}`); refreshAll(); } } });
-    dom.beamCanvas.addEventListener('pointerup', (event) => { if (dragState.active && dragState.modified) { invalidateSolutions('Layout changed – rerun solver'); } if (dragState.active) { dragState.active = false; dragState.type = null; dragState.id = null; dragState.modified = false; } if (typeof dom.beamCanvas.hasPointerCapture === 'function' && dom.beamCanvas.hasPointerCapture(event.pointerId)) { dom.beamCanvas.releasePointerCapture(event.pointerId); } dom.beamCanvas.style.cursor = state.locked ? 'not-allowed' : 'crosshair'; hideDragIndicator(); });
+    dom.beamCanvas.addEventListener('pointerup', (event) => { if (dragState.active && dragState.modified) { invalidateSolutions('Layout changed - rerun solver'); } if (dragState.active) { dragState.active = false; dragState.type = null; dragState.id = null; dragState.modified = false; } if (typeof dom.beamCanvas.hasPointerCapture === 'function' && dom.beamCanvas.hasPointerCapture(event.pointerId)) { dom.beamCanvas.releasePointerCapture(event.pointerId); } dom.beamCanvas.style.cursor = state.locked ? 'not-allowed' : 'crosshair'; hideDragIndicator(); });
     dom.beamCanvas.addEventListener('pointerleave', (event) => { hideDragIndicator(); dragState.active = false; dragState.modified = false; if (typeof dom.beamCanvas.hasPointerCapture === 'function' && dom.beamCanvas.hasPointerCapture(event.pointerId)) { dom.beamCanvas.releasePointerCapture(event.pointerId); } dom.beamCanvas.style.cursor = state.locked ? 'not-allowed' : 'crosshair'; });
     dom.beamCanvas.addEventListener('pointercancel', (event) => { hideDragIndicator(); dragState.active = false; dragState.modified = false; if (typeof dom.beamCanvas.hasPointerCapture === 'function' && dom.beamCanvas.hasPointerCapture(event.pointerId)) { dom.beamCanvas.releasePointerCapture(event.pointerId); } dom.beamCanvas.style.cursor = state.locked ? 'not-allowed' : 'crosshair'; });
     dom.exportConfigBtn.addEventListener('click', () => {
@@ -2378,6 +2344,9 @@
         };
         reader.readAsText(file);
     });
+    if (dom.versionTag) {
+        dom.versionTag.textContent = `Moth v${APP_VERSION}`;
+    }
     applyQueryInitialBeamDefaults();
     setupInputListeners();
     resetLibrary({ skipInvalidate: true });
